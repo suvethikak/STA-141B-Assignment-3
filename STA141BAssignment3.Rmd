@@ -1,0 +1,669 @@
+---
+title: "STA 141B Assignment 3"
+author: "Suvethika Kandasamy"
+date: "2024-05-21"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+These are the tables we are working with for this report.
+
+```{r}
+library(RSQLite)
+library(DBI)
+library(ggplot2)
+db <- dbConnect(SQLite(), "stats.stackexchange.db")
+dbListTables(db)
+```
+
+
+Here are some of the fields within these tables: Posts, PostHistory, Comments, Users, Badges
+```{r}
+dbListFields(db, "Posts")
+dbListFields(db, "PostHistory")
+dbListFields(db, "Comments")
+dbListFields(db, "Users")
+dbListFields(db, "Badges")
+```
+
+1. How many posts are there?
+
+```{r}
+qry <- "SELECT count(distinct ID) 
+        FROM Posts"
+dbGetQuery(db, qry)
+```
+
+There are 405220 posts in total. I did this by looking at the unqiue Ids in the posts table. I think I could have done this without the DISTINCT part because it looks like Id is the primary key of that table and each row represents a post.
+
+2. How many posts are there since 2020? (Hint: Convert the CreationDate to a year.)
+
+```{r}
+qry <- "SELECT COUNT(DATE(CreationDate))
+FROM Posts
+WHERE DATE(CreationDate) >= '2020-01-01';
+"
+dbGetQuery(db, qry)
+ qry <- "SELECT count(CreationDate) 
+#         FROM Posts;"
+# 
+# dbGetQuery(db, qry)
+# 
+# qry <- "SELECT COUNT(DATE(CreationDate))
+# FROM Posts
+# WHERE DATE(CreationDate) < '2020-01-01';
+# "
+# dbGetQuery(db, qry)
+
+```
+
+There are 110949 posts since 2020.	I converted the Creation Date and selected the dates that were >= 2020 to get this number. Its adds up to the proper amount (checked how many below 2020 and adss up to the total) and I looked into some the variables inside and they are accurately below 2020 or in 2020 and above.
+
+3. How many posts are there each year? Describe this with a plot, commenting on any anomalies
+
+```{r}
+qry <- "SELECT STRFTIME('%Y', CreationDate) AS Year, COUNT(ID) as PostCount
+        FROM Posts
+        GROUP BY STRFTIME('%Y', CreationDate);"
+result <- dbGetQuery(db, qry)
+
+df <- data.frame(result)
+ggplot(df, aes(x = Year, y = PostCount)) +
+  geom_line(group = 1) +  # Line plot
+  geom_point() +          # Points on the line
+  labs(title = "Number of Posts Each Year",
+       x = "Year",
+       y = "Number of Posts") +
+  theme_minimal()
+```
+
+4. How many tags are in most questions?
+
+```{r}
+qry <- "SELECT P.PostTypeId, P.Tags, M.value
+        FROM Posts as P
+        INNER JOIN PostTypeIdMap as M
+        ON P.PostTypeId = M.id
+        WHERE M.value = 'Question';"
+result <- dbGetQuery(db, qry)
+
+count_tags <- function(tags) {
+  if (is.na(tags) || tags == "") {
+    return(0)
+  }
+  return(length(strsplit(tags, "><")[[1]]))
+}
+
+result$TagCount <- sapply(result$Tags, count_tags)
+
+tag_count_table <- table(result$TagCount)
+tag_count_table
+
+most_common_tag_count <- as.integer(names(tag_count_table)[which.max(tag_count_table)])
+most_common_tag_count
+
+```
+
+The most common number of tags for a question is 3.
+
+5. How many posted questions are there?
+
+```{r}
+qry <- "SELECT COUNT(P.PostTypeId) as NumofPostedQuestions
+        FROM Posts as P
+        INNER JOIN PostTypeIdMap as M
+        ON P.PostTypeId = M.id
+        WHERE M.value = 'Question';"
+dbGetQuery(db, qry)
+```
+
+There are 204370 posted questions.
+
+6. How many answers are there? (#7)
+
+```{r}
+qry <- "SELECT COUNT(P.PostTypeId) as NumofPostedAnswers
+        FROM Posts as P
+        INNER JOIN PostTypeIdMap as M
+        ON P.PostTypeId = M.id
+        WHERE M.value = 'Answer';"
+dbGetQuery(db, qry)
+```
+
+There are 197928 answers.
+
+7. (16.) How many comments are there across all posts? • How many posts have a comment? • What is the distribution of comments per question?
+
+```{r}
+qry <- "SELECT COUNT(*) AS numoftotalcomments
+        FROM Comments;"
+dbGetQuery(db, qry)
+
+qry <- "SELECT COUNT(DISTINCT PostId) AS numofpostswithcomments
+        FROM Comments;"
+dbGetQuery(db, qry)
+
+qry <- "SELECT CommentCount
+        FROM Posts
+        WHERE PostTypeId = 1;"
+comment_counts <- dbGetQuery(db, qry)
+
+summary(comment_counts$CommentCount)
+ggplot(comment_counts, aes(x = CommentCount)) +
+  geom_histogram(binwidth = 1, fill = "blue", color = "black") +
+  labs(title = "Distribution of Comments per Question",
+       x = "Number of Comments",
+       y = "Frequency") +
+  theme_minimal()
+```
+
+8. (19.) How many questions were edited by the original poster? by other users?
+
+```{r}
+# qry <- "SELECT COUNT(LastEditorUserId) AS edittedbyoriginalposter
+#         FROM Posts
+#         WHERE PostTypeId = 1 AND OwnerUserId = LastEditorUserId
+#         LIMIT 10;"
+# dbGetQuery(db, qry)
+# 
+qry <- "SELECT COUNT(LastEditorUserId) AS edittedbyoriginalposter
+        FROM Posts AS P
+        INNER JOIN
+        PostHistory AS PH
+        ON P.Id = PH.PostId
+        WHERE P.PostTypeId = 1 AND P.OwnerUserId = LastEditorUserId
+        LIMIT 10;"
+dbGetQuery(db, qry)
+
+qry <- "SELECT count(LastEditorUserId)
+        FROM Posts
+        WHERE PostTypeId = 1
+        AND LastEditorUserId IS NOT NULL
+        AND LastEditorUserId != ''
+        AND LastEditorUserId != OwnerUserId;"
+dbGetQuery(db, qry)
+
+```
+
+302642 questions were edited by the original poster. 72582 questions were edited by other users.
+I checked if the numbers add up. Originally checked how many posts had edits in total and then checked if the two numbers added up to the total expected.
+
+9. (20.) How many posts have multiple different people who edit it?
+
+```{r}
+qry <- "SELECT COUNT(*)
+        FROM (
+            SELECT PostId
+            FROM PostHistory
+            GROUP BY PostId
+            HAVING COUNT(DISTINCT UserId) > 1
+        ) AS MultiEditorPosts;"
+dbGetQuery(db, qry)
+
+# qry <- "SELECT PostId, COUNT(DISTINCT(UserId))
+#         FROM PostHistory
+#         GROUP BY PostId
+#         HAVING COUNT(DISTINCT(UserId)) > 1;"
+# dbGetQuery(db, qry)
+
+# double checking if the code is accurately doing what I want
+# qry <- "SELECT UserId
+#         FROM PostHistory
+#         WHERE PostId = 2;"
+# dbGetQuery(db, qry)
+# 
+# 
+# dbListFields(db, "PostHistory")
+```
+
+143544 posts have multiple different people who edit it.
+
+10. (15.) What question has the most comments associated with it? • how many answers are there for this question?
+
+```{r}
+qry <- "SELECT C.PostId, Count(C.Id)
+        FROM Posts as P
+        INNER JOIN Comments as C
+        ON P.Id = C.PostId
+        WHERE P.PostTypeId = 1
+        HAVING COUNT(C.Id) = MAX(COUNT(C.Id))
+        Group by  C.PostId;"
+
+qry <- "SELECT C.PostId, COUNT(C.Id) AS CommentCount, P.AnswerCount
+        FROM Posts AS P
+        INNER JOIN Comments AS C ON P.Id = C.PostId
+        WHERE P.PostTypeId = 1
+        GROUP BY C.PostId
+        HAVING COUNT(C.Id) = (
+            SELECT MAX(CommentCount)
+            FROM (
+                SELECT COUNT(C.Id) AS CommentCount
+                FROM Posts AS P
+                INNER JOIN Comments AS C ON P.Id = C.PostId
+                WHERE P.PostTypeId = 1
+                GROUP BY C.PostId
+            ) AS CommentCounts
+        );"
+dbGetQuery(db, qry)
+```
+
+Required Questions
+
+21. Compute the table that contains
+• the question,
+• the name of the user who posted it,
+• when that user joined,
+• their location
+• the date the question was first posted,
+• the accepted answer,
+• when the accepted answer was posted
+• the name of the user who provided the accepted answer.
+
+```{r}
+qry <- "
+  SELECT 
+    Q.Body AS Question,
+    U.DisplayName AS UserName,
+    U.CreationDate AS UserJoinDate,
+    U.Location AS UserLocation,
+    Q.CreationDate AS PostCreationDate,
+    Q.AcceptedAnswerId,
+    A.Body AS AcceptedAnswer,
+    A.CreationDate AS AcceptedAnswerDate,
+    AU.DisplayName AS AcceptedAnswerUserName
+  FROM 
+    Posts AS Q
+  INNER JOIN 
+    Users AS U ON Q.OwnerUserId = U.Id
+  LEFT JOIN 
+    Posts AS A ON Q.AcceptedAnswerId = A.Id
+  LEFT JOIN 
+    Users AS AU ON A.OwnerUserId = AU.Id
+  WHERE 
+    Q.PostTypeId = 1;"
+
+result <- dbGetQuery(db, qry)
+
+qry <- "
+  SELECT 
+    Q.Body AS Question,
+    U.DisplayName AS UserName,
+    U.CreationDate AS UserJoinDate,
+    U.Location AS UserLocation,
+    Q.CreationDate AS PostCreationDate,
+    Q.AcceptedAnswerId,
+    A.Body AS AcceptedAnswer,
+    A.CreationDate AS AcceptedAnswerDate,
+    AU.DisplayName AS AcceptedAnswerUserName
+  FROM 
+    Posts AS Q
+  INNER JOIN 
+    Users AS U ON Q.OwnerUserId = U.Id
+  LEFT JOIN 
+    Posts AS A ON Q.AcceptedAnswerId = A.Id
+  LEFT JOIN 
+    Users AS AU ON A.OwnerUserId = AU.Id
+  WHERE 
+    Q.PostTypeId = 1
+  LIMIT 10;"
+
+dbGetQuery(db, qry)
+
+```
+
+22. Determine the users that have only posted questions and never answered a question? (Compute the table containing the number of questions, number of answers and the user’s login name for this group.) How many are there?
+
+```{r}
+qry <- "
+  SELECT 
+    U.DisplayName AS UserName,
+    Q.NumQuestions,
+    COALESCE(A.NumAnswers, 0) AS NumAnswers
+  FROM 
+    Users AS U
+  LEFT JOIN (
+    SELECT 
+      OwnerUserId,
+      COUNT(*) AS NumQuestions
+    FROM 
+      Posts
+    WHERE 
+      PostTypeId = 1
+    GROUP BY 
+      OwnerUserId
+  ) AS Q ON U.Id = Q.OwnerUserId
+  LEFT JOIN (
+    SELECT 
+      OwnerUserId,
+      COUNT(*) AS NumAnswers
+    FROM 
+      Posts
+    WHERE 
+      PostTypeId = 2
+    GROUP BY 
+      OwnerUserId
+  ) AS A ON U.Id = A.OwnerUserId
+  WHERE 
+    Q.NumQuestions IS NOT NULL
+    AND COALESCE(A.NumAnswers, 0) = 0;
+"
+result <- dbGetQuery(db, qry)
+
+qry <- "
+  SELECT 
+    U.DisplayName AS UserName,
+    Q.NumQuestions,
+    COALESCE(A.NumAnswers, 0) AS NumAnswers
+  FROM 
+    Users AS U
+  LEFT JOIN (
+    SELECT 
+      OwnerUserId,
+      COUNT(*) AS NumQuestions
+    FROM 
+      Posts
+    WHERE 
+      PostTypeId = 1
+    GROUP BY 
+      OwnerUserId
+  ) AS Q ON U.Id = Q.OwnerUserId
+  LEFT JOIN (
+    SELECT 
+      OwnerUserId,
+      COUNT(*) AS NumAnswers
+    FROM 
+      Posts
+    WHERE 
+      PostTypeId = 2
+    GROUP BY 
+      OwnerUserId
+  ) AS A ON U.Id = A.OwnerUserId
+  WHERE 
+    Q.NumQuestions IS NOT NULL
+    AND COALESCE(A.NumAnswers, 0) = 0
+  LIMIT 10;
+"
+
+dbGetQuery(db, qry)
+```
+
+There are 76077+333 users in total that asked questions but never answered any.
+
+23. Compute the table with information for the 75 users with the most accepted answers. This table should
+include
+• the user’s display name, *
+• creation date, *
+• location, *
+• the number of badges they have won, *
+– the names of the badges (as a single string) *
+• the dates of the earliest and most recent accepted answer (as two fields) *
+– the (unique) tags for all the questions for which they had the accepted answer (as a single string)
+
+I did 26 on a seperate file because it is using up too much memory for the R markdown to knit.
+
+
+
+```{r, echo=FALSE}
+
+# qry <- "SELECT p1.ParentId, p1.OwnerUserId, p2.Id, p2.Tags, GROUP_CONCAT(p2.Tags, ', ')
+# FROM Posts AS p1
+# INNER JOIN Posts AS p2
+# ON p1.ParentId = p2.Id
+# WHERE p1.Id in (SELECT AcceptedAnswerId
+# FROM Posts
+# WHERE PostTypeId = 1 AND AcceptedAnswerId != '')
+# GROUP By p1.OwnerUserId
+# LIMIT 10;
+# "
+# dbGetQuery(db, qry)
+```
+
+```{r, echo=FALSE}
+# qry <- "SELECT p1.ParentId AS question_id, p2.Tags AS tags
+# FROM Posts AS p1
+# INNER JOIN Posts AS p2
+# ON p1.ParentId = p2.Id
+# WHERE p1.OwnerUserId = 6
+# AND p1.Id IN (SELECT AcceptedAnswerId
+#               FROM Posts
+#               WHERE PostTypeId = 1);"
+# 
+# result <- dbGetQuery(db, qry)
+# print(result)
+
+```
+
+```{r, echo=FALSE}
+# qry <- "SELECT p1.OwnerUserId, GROUP_CONCAT(p2.Tags) AS Tags
+# FROM Posts AS p1
+# INNER JOIN Posts AS p2
+# ON p1.ParentId = p2.Id
+# WHERE p1.Id in (SELECT AcceptedAnswerId
+# FROM Posts
+# WHERE PostTypeId = 1 AND AcceptedAnswerId != '')
+# GROUP By p1.OwnerUserId
+# LIMIT 5;
+# "
+# dbGetQuery(db, qry)
+```
+
+```{r, echo=FALSE}
+# unique_tags <- function(tags_string) {
+#   tags_list <- unlist(strsplit(tags_string, ","))
+#   unique_tags <- unique(tags_list)
+#   unique_tags_string <- paste(unique_tags, collapse = ",")
+#   return(unique_tags_string)
+# }
+# 
+# # Example usage:
+# tags_string <- "<bayesian,prior,elicitation>,<time-series,change-point,intervention-analysis,time-series>"
+# cleaned_tags <- clean_tags(tags_string)
+# print(cleaned_tags)
+# unique_tags(cleaned_tags)
+
+```
+
+
+```{r, echo=FALSE}
+#Getting the Tags for Each User
+# qry <- "SELECT p1.OwnerUserId, GROUP_CONCAT(p2.Tags) AS Tags
+# FROM Posts AS p1
+# INNER JOIN Posts AS p2
+# ON p1.ParentId = p2.Id
+# WHERE p1.Id in (SELECT AcceptedAnswerId
+# FROM Posts
+# WHERE PostTypeId = 1 AND AcceptedAnswerId != '')
+# GROUP By p1.OwnerUserId;
+# "
+# result <- dbGetQuery(db, qry)
+# 
+# clean_tags <- function(tags_string) {
+#   tags <- unlist(strsplit(tags_string, ","))
+#   unique_tags <- unique(tags)
+#   cleaned_tags <- gsub("><", ",", unique_tags)
+#   cleaned_tags <- gsub("[<>]", "", cleaned_tags)
+#   return(paste(cleaned_tags, collapse = ","))
+# }
+# 
+# unique_tags <- function(tags_string) {
+#   tags_list <- unlist(strsplit(tags_string, ","))
+#   unique_tags <- unique(tags_list)
+#   unique_tags_string <- paste(unique_tags, collapse = ", ")
+#   return(unique_tags_string)
+# }
+# 
+# for (i in 1:nrow(result)) {
+#   result[i, "Tags"] <- unique_tags(clean_tags(result[i, "Tags"]))
+# }
+# 
+# result
+```
+
+
+
+```{r}
+# qry <- "SELECT OwnerUserId, COUNT(*) AS numofanswers
+# FROM Posts
+# WHERE Id in (SELECT AcceptedAnswerId
+# FROM Posts
+# WHERE PostTypeId = 1 AND AcceptedAnswerId != '')
+# GROUP By OwnerUserId
+# ORDER BY COUNT(*) DESC
+# LIMIT 75;
+# "
+# 
+# qry <- "SELECT Id, AcceptedAnswerId, Tags
+# FROM Posts
+# WHERE PostTypeId = 1 AND AcceptedAnswerId != '';
+# "
+# 
+# qry <- "SELECT OwnerUserId, MIN(CreationDate) AS EarliestAcceptedAnsDate, MAX(CreationDate) AS RecentAcceptedAnsDate
+# FROM Posts
+# WHERE Id in (SELECT AcceptedAnswerId
+# FROM Posts
+# WHERE PostTypeId = 1 AND AcceptedAnswerId != '')
+# GROUP By OwnerUserId;"
+
+
+# qry <- " SELECT U.Id, B.UserId, U.DisplayName, U.CreationDate AS UserCreationDate, U.Location, COUNT(B.Id) AS NumOfBadges, GROUP_CONCAT(B.Name, ', ') AS BadgeNames, A.EarliestAcceptedAnsDate, A.RecentAcceptedAnsDate, R.Tags
+# FROM Users AS U
+# INNER JOIN Badges AS B
+# ON U.Id = B.UserId
+# LEFT JOIN (SELECT OwnerUserId, MIN(CreationDate) AS EarliestAcceptedAnsDate, MAX(CreationDate) AS RecentAcceptedAnsDate
+# FROM Posts
+# WHERE Id in (SELECT AcceptedAnswerId
+# FROM Posts
+# WHERE PostTypeId = 1 AND AcceptedAnswerId != '')
+# GROUP By OwnerUserId) AS A ON U.Id = A.OwnerUserId
+# INNER JOIN (
+#     SELECT p1.OwnerUserId, GROUP_CONCAT(p2.Tags) AS Tags
+#     FROM Posts AS p1
+#     INNER JOIN Posts AS p2 ON p1.ParentId = p2.Id
+#     WHERE p1.Id IN (SELECT AcceptedAnswerId FROM Posts WHERE PostTypeId = 1 AND AcceptedAnswerId != '')
+#     GROUP BY p1.OwnerUserId
+# ) AS R ON U.Id = R.OwnerUserId
+# WHERE U.Id in
+# (SELECT OwnerUserId
+# FROM Posts
+# WHERE Id in (SELECT AcceptedAnswerId
+# FROM Posts
+# WHERE PostTypeId = 1 AND AcceptedAnswerId != '')
+# GROUP By OwnerUserId
+# ORDER BY COUNT(*) DESC
+# LIMIT 75)
+# GROUP BY B.UserId;
+# "
+# result <- dbGetQuery(db, qry)
+# 
+# clean_tags <- function(tags_string) {
+#   tags <- unlist(strsplit(tags_string, ","))
+#   unique_tags <- unique(tags)
+#   cleaned_tags <- gsub("><", ",", unique_tags)
+#   cleaned_tags <- gsub("[<>]", "", cleaned_tags)
+#   return(paste(cleaned_tags, collapse = ","))
+# }
+# 
+# unique_tags <- function(tags_string) {
+#   tags_list <- unlist(strsplit(tags_string, ","))
+#   unique_tags <- unique(tags_list)
+#   unique_tags_string <- paste(unique_tags, collapse = ", ")
+#   return(unique_tags_string)
+# }
+# 
+# for (i in 1:nrow(result)) {
+#   result[i, "Tags"] <- unique_tags(clean_tags(result[i, "Tags"]))
+# }
+# 
+# head(result, 10)
+
+```
+
+
+
+24. How many questions received no answers (accepted or unaccepted)? How many questions had no accepted answer?
+
+```{r}
+qry_no_answers <- "
+SELECT COUNT(*) AS NoAnswers
+FROM Posts
+WHERE PostTypeId = 1
+AND AnswerCount = 0 OR AcceptedAnswerId = '';
+"
+dbGetQuery(db, qry_no_answers)
+
+qry_no_accepted_answers <- "
+SELECT COUNT(*) AS NoAcceptedAnswers
+FROM Posts
+WHERE PostTypeId = 1
+AND AcceptedAnswerId = '';
+"
+dbGetQuery(db, qry_no_accepted_answers)
+```
+
+
+25. What is the distribution of answers per posted question?
+
+```{r}
+qry_answers_distribution <- "
+SELECT AnswerCount, COUNT(*) AS QuestionCount
+FROM Posts
+WHERE PostTypeId = 1
+GROUP BY AnswerCount
+ORDER BY AnswerCount;
+"
+result_answers_distribution<-dbGetQuery(db, qry_answers_distribution)
+result_answers_distribution
+df <- as.data.frame(result_answers_distribution)
+
+# Plotting the distribution
+ggplot(df, aes(x = AnswerCount, y = QuestionCount)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  labs(
+    title = "Distribution of Answers per Posted Question",
+    x = "Number of Answers",
+    y = "Number of Questions"
+  ) +
+  theme_minimal()+
+  xlim(0, 160)
+```
+
+26. What is the length of time for a question to receive an answer? to obtaining an accepted answer?
+
+```{r}
+qry = "SELECT q.Id AS QId, q.CreationDate AS QDate, a.Id AS AId, MIN(a.CreationDate) AS FirstADate,   julianday(MIN(a.CreationDate)) - julianday(q.CreationDate) AS ADays
+                        FROM Posts q
+                        JOIN Posts a on QId = a.ParentId AND a.PostTypeId = 2
+                        WHERE q.PostTypeId = 1
+                        GROUP BY QId, QDate;"
+time_data <- dbGetQuery(db, qry)
+time_data <- time_data[time_data$ADays >= 0,]
+head(time_data, 10)
+mean(time_data$ADays)
+median(time_data$ADays)
+```
+
+There were some negative values in the answer day column which would mean there are some answers posted before the question? This must be some sort of DB error. After filter those out and then calculating the averages in R: 54.45071 is the avg.
+
+```{r}
+qry <- "SELECT 
+        q.Id AS QId, 
+        q.CreationDate AS QDate, 
+        MIN(a.CreationDate) AS FirstADate, 
+        julianday(MIN(a.CreationDate)) - julianday(q.CreationDate) AS ADays
+    FROM 
+        Posts q
+        JOIN Posts a ON q.AcceptedAnswerId = a.Id
+    WHERE 
+        q.PostTypeId = 1
+    GROUP BY 
+        QId, QDate;
+"
+time_data2 <- dbGetQuery(db, qry)
+time_data2 <- time_data2[time_data2$ADays >= 0,]
+mean(time_data2$ADays)
+median(time_data2$ADays)
+```
+

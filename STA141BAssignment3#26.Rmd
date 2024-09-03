@@ -1,0 +1,68 @@
+---
+title: 'STA141B #26'
+author: "Suvethika Kandasamy"
+date: "2024-05-22"
+output: pdf_document
+---
+
+```{r}
+library(RSQLite)
+library(DBI)
+library(ggplot2)
+db <- dbConnect(SQLite(), "stats.stackexchange.db")
+dbListTables(db)
+```
+
+```{r}
+qry <- " SELECT U.Id, B.UserId, U.DisplayName, U.CreationDate AS UserCreationDate, U.Location, COUNT(B.Id) AS NumOfBadges, GROUP_CONCAT(B.Name, ', ') AS BadgeNames, A.EarliestAcceptedAnsDate, A.RecentAcceptedAnsDate, R.Tags
+FROM Users AS U
+INNER JOIN Badges AS B
+ON U.Id = B.UserId
+LEFT JOIN (SELECT OwnerUserId, MIN(CreationDate) AS EarliestAcceptedAnsDate, MAX(CreationDate) AS RecentAcceptedAnsDate
+FROM Posts
+WHERE Id in (SELECT AcceptedAnswerId
+FROM Posts
+WHERE PostTypeId = 1 AND AcceptedAnswerId != '')
+GROUP By OwnerUserId) AS A ON U.Id = A.OwnerUserId
+INNER JOIN (
+    SELECT p1.OwnerUserId, GROUP_CONCAT(p2.Tags) AS Tags
+    FROM Posts AS p1
+    INNER JOIN Posts AS p2 ON p1.ParentId = p2.Id
+    WHERE p1.Id IN (SELECT AcceptedAnswerId FROM Posts WHERE PostTypeId = 1 AND AcceptedAnswerId != '')
+    GROUP BY p1.OwnerUserId
+) AS R ON U.Id = R.OwnerUserId
+WHERE U.Id in
+(SELECT OwnerUserId
+FROM Posts
+WHERE Id in (SELECT AcceptedAnswerId
+FROM Posts
+WHERE PostTypeId = 1 AND AcceptedAnswerId != '')
+GROUP By OwnerUserId
+ORDER BY COUNT(*) DESC
+LIMIT 75)
+GROUP BY B.UserId;
+"
+result <- dbGetQuery(db, qry)
+
+clean_tags <- function(tags_string) {
+  tags <- unlist(strsplit(tags_string, ","))
+  unique_tags <- unique(tags)
+  cleaned_tags <- gsub("><", ",", unique_tags)
+  cleaned_tags <- gsub("[<>]", "", cleaned_tags)
+  return(paste(cleaned_tags, collapse = ","))
+}
+
+unique_tags <- function(tags_string) {
+  tags_list <- unlist(strsplit(tags_string, ","))
+  unique_tags <- unique(tags_list)
+  unique_tags_string <- paste(unique_tags, collapse = ", ")
+  return(unique_tags_string)
+}
+
+for (i in 1:nrow(result)) {
+  result[i, "Tags"] <- unique_tags(clean_tags(result[i, "Tags"]))
+}
+
+head(result, 10)
+```
+
